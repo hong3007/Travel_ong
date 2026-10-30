@@ -1,5 +1,5 @@
 // 설치한 앱이 인터넷 없이도 열리게 한다. 페이지는 인터넷 먼저(최신본), 안 되면 저장해 둔 것을 보여준다
-const CACHE = 'cm-trip-v2';
+const CACHE = 'cm-trip-v3';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

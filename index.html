@@ -2365,6 +2365,7 @@ body.editing #editBtn{background:var(--mint)}
 #planner .proute{font-family:'Gaegu';font-size:16px;font-weight:700;border:0;border-radius:999px;padding:4px 15px;
   margin-top:8px;cursor:pointer;background:var(--sky);color:var(--ink)}
 #planner .pilbox{margin-top:14px}
+#planner .sync{font-family:'Gowun Dodum';font-size:13px;color:var(--soft);font-weight:normal}
 #planner .pilrow{display:flex;gap:8px;align-items:flex-start;margin:8px 0;font-size:14px}
 #planner .pilrow > b{flex:0 0 58px;font-family:'Gaegu';font-size:17px;padding-top:3px}
 #planner .pilrow > div{display:flex;flex-wrap:wrap;gap:5px}
@@ -2416,8 +2417,8 @@ body.editing #editBtn{background:var(--mint)}
 
 <!-- ───────── 계획 짜기 ───────── -->
 <section id="planner">
-  <h2 style="--tape:var(--lilac)">🧩 계획 짜기</h2>
-  <div class="tip sky e">날짜를 고르고 아래 <b>알약</b>을 누르면 그 날 순서에 차례로 쌓여요. ✕로 빼고 ↑↓로 순서를 바꿀 수 있어요. 💾 저장하면 짜둔 계획도 같이 저장됩니다.</div>
+  <h2 style="--tape:var(--lilac)">🧩 계획 짜기 <small id="syncSt" class="sync"></small></h2>
+  <div class="tip sky e">날짜를 고르고 아래 <b>알약</b>을 누르면 그 날 순서에 차례로 쌓여요. ✕로 빼고 ↑↓로 순서를 바꿀 수 있어요. 짠 계획은 자동으로 저장돼서 같이 가는 사람도 이 주소에서 똑같이 봐요.</div>
 
   <input type="radio" name="pday" id="pd-d1031" value="d1031" checked><label class="ptab" for="pd-d1031">10/31 토</label>
   <input type="radio" name="pday" id="pd-d1101" value="d1101"><label class="ptab" for="pd-d1101">11/1 일</label>
@@ -2584,19 +2585,21 @@ const curSeq = () => document.getElementById('seq-' + document.querySelector('in
 
 document.querySelector('#planner .pilbox').addEventListener('click', e => {
   const b = e.target.closest('.pil'); if (!b) return;
-  curSeq().appendChild(seqRow(b.dataset.n)); dirty = true; setEdit(editing);
+  curSeq().appendChild(seqRow(b.dataset.n)); setEdit(editing); push();
 });
 
-// 새 알약: 선택한 줄 끝에 붙인다 (저장하면 DOM째로 남는다)
+// 새 알약: 선택한 줄 끝에 붙인다. data-x 표시가 있는 것만 클라우드에 따로 저장한다
+const pilEl = (name, cat) => {
+  const b = document.createElement('button');
+  b.className = 'pil'; b.dataset.n = name; b.dataset.x = ''; b.textContent = name;
+  document.querySelector('#planner .pilrow[data-cat="' + cat + '"] > div').appendChild(b);
+};
 const addPill = () => {
   const inp = document.getElementById('pAddName');
   const name = inp.value.trim(); if (!name) return;
   const cat = document.getElementById('pAddCat').value;
-  const row = document.querySelector('#planner .pilrow[data-cat="' + cat + '"] > div');
-  const b = document.createElement('button');
-  b.className = 'pil'; b.dataset.n = name; b.textContent = name;
-  row.appendChild(b);
-  inp.value = ''; dirty = true;
+  pilEl(name, cat);
+  inp.value = ''; push();
 };
 document.getElementById('pAddBtn').onclick = addPill;
 document.getElementById('pAddName').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.isComposing) addPill(); });
@@ -2604,9 +2607,9 @@ document.getElementById('pAddName').addEventListener('keydown', e => { if (e.key
 document.getElementById('planner').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   const li = b.closest('li');
-  if (b.classList.contains('px')) { li.remove(); dirty = true; }
-  else if (b.classList.contains('pup') && li.previousElementSibling) { li.parentNode.insertBefore(li, li.previousElementSibling); dirty = true; }
-  else if (b.classList.contains('pdn') && li.nextElementSibling) { li.parentNode.insertBefore(li.nextElementSibling, li); dirty = true; }
+  if (b.classList.contains('px')) { li.remove(); push(); }
+  else if (b.classList.contains('pup') && li.previousElementSibling) { li.parentNode.insertBefore(li, li.previousElementSibling); push(); }
+  else if (b.classList.contains('pdn') && li.nextElementSibling) { li.parentNode.insertBefore(li.nextElementSibling, li); push(); }
   else if (b.classList.contains('proute')) {
     const names = [...document.getElementById('seq-' + b.dataset.day).querySelectorAll('.pn')].map(x => x.textContent.trim());
     if (names.length < 2) return alert('두 곳 이상 담아야 길찾기를 열 수 있어요.');
@@ -2621,6 +2624,73 @@ document.getElementById('planner').addEventListener('click', e => {
 document.querySelectorAll('input[name=pday]').forEach(r => r.addEventListener('change', () => {
   document.querySelectorAll('input[name=pday]').forEach(x => x.toggleAttribute('checked', x.checked));
 }));
+
+/* ---------- ☁️ 함께 보기: 계획을 Supabase에 저장 ----------
+   읽기는 누구나, 저장은 비밀번호를 아는 사람만(서버 함수 trip_save가 확인). anon 키는 공개용이라 코드에 둬도 된다 */
+const SB_URL = 'https://unpfcmdbdcpstsdnatud.supabase.co', SB_KEY = 'sb_publishable_v6QdtRd2q62-1zplFR6uzw_LL_WppI8', PLAN_ID = 'chiangmai-2026';
+const st = document.getElementById('syncSt');
+let saveT = 0, pending = false;
+
+const planState = () => ({
+  days: Object.fromEntries([...document.querySelectorAll('#planner ol.seq')].map(o =>
+    [o.id.slice(4), [...o.querySelectorAll('.pn')].map(x => x.textContent.trim())])),
+  extra: [...document.querySelectorAll('#planner .pil[data-x]')].map(b => ({ n: b.dataset.n, c: b.closest('.pilrow').dataset.cat }))
+});
+// 저장소 내용은 남이 쓴 데이터라 글자로만 넣는다(textContent)
+const applyPlan = p => {
+  if (!p || typeof p !== 'object') return;
+  const days = p.days || {};
+  document.querySelectorAll('#planner ol.seq').forEach(o =>
+    o.replaceChildren(...(Array.isArray(days[o.id.slice(4)]) ? days[o.id.slice(4)] : []).map(n => seqRow(String(n).slice(0, 60)))));
+  document.querySelectorAll('#planner .pil[data-x]').forEach(b => b.remove());
+  (Array.isArray(p.extra) ? p.extra : []).forEach(x => { if (x && 'heg'.includes(x.c) && x.c.length === 1 && x.n) pilEl(String(x.n).slice(0, 40), x.c); });
+  setEdit(editing);
+};
+const rpc = (fn, body) => fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+  method: 'POST', headers: { apikey: SB_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+}).then(async r => { const j = await r.json().catch(() => null); if (!r.ok) throw new Error((j && j.message) || r.status); return j; });
+const hhmm = t => new Date(t).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+function push() {
+  try { localStorage.setItem('tripPlan', JSON.stringify(planState())); } catch {}
+  if (!SB_URL) return;
+  pending = true; clearTimeout(saveT); st.textContent = '저장 대기…';
+  saveT = setTimeout(save, 800);
+}
+async function save() {
+  let pw = ''; try { pw = localStorage.getItem('tripPass') || ''; } catch {}
+  if (!pw) {
+    pw = (prompt('함께 보는 계획에 저장하려면 비밀번호를 입력하세요 (한 번만 물어봐요)') || '').trim();
+    if (!pw) { st.textContent = '📵 이 기기에만 있음 (비밀번호 없음)'; return; }
+  }
+  st.textContent = '저장 중…';
+  try {
+    const t = await rpc('trip_save', { p_id: PLAN_ID, p_pass: pw, p_data: planState() });
+    try { localStorage.setItem('tripPass', pw); } catch {}
+    pending = false; st.textContent = '☁️ 저장됨 ' + hhmm(t);
+  } catch (e) {
+    if (/password/.test(e.message)) { try { localStorage.removeItem('tripPass'); } catch {} st.textContent = '🔒 비밀번호가 틀려서 저장 안 됨'; }
+    else st.textContent = '📵 인터넷 연결 후 다시 저장할게요';
+  }
+}
+async function pull() {
+  if (!SB_URL || document.hidden || editing) return;   // 편집 중엔 글자 고치는 걸 덮어쓰지 않게
+  if (pending) return save();                 // 아직 못 올린 내 변경이 먼저
+  try {
+    const [row] = await rpc('trip_get', { p_id: PLAN_ID });
+    if (!row || pending) return;
+    applyPlan(row.data);
+    try { localStorage.setItem('tripPlan', JSON.stringify(row.data)); } catch {}
+    st.textContent = '☁️ ' + hhmm(row.updated_at) + ' 기준';
+  } catch { st.textContent = '📵 오프라인 (마지막으로 본 계획)'; }
+}
+
+// 시작: 이 기기에 남은 계획을 먼저 보여 주고, 서버 최신본으로 바꾼다
+try { applyPlan(JSON.parse(localStorage.getItem('tripPlan'))); } catch {}
+doc.addEventListener('input', e => { if (e.target.closest('#planner ol.seq')) push(); });
+document.addEventListener('visibilitychange', pull);
+setInterval(pull, 20000);                    // ponytail: 20초마다 확인, 동시에 고치면 나중 저장이 이김. 실시간 구독은 필요해지면
+pull();
 </script>
 </body>
 </html>
